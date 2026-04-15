@@ -1,86 +1,144 @@
 # Agentic Trading Bot
 
-## 1. Overview
-
-An AI-powered stock market chatbot built with an agentic architecture. Users can upload stock market documents (PDFs, DOCX) to build a custom knowledge base, then ask natural language questions about stocks, financials, and market trends. The bot intelligently routes queries through multiple tools — a document retriever, a financial data API, and a live web search — to provide accurate, context-aware answers.
-
-**Key capabilities:**
-- Upload and ingest stock market research documents into a vector database
-- Ask questions about stocks, financial data, and market trends in natural language
-- Agent autonomously decides which tool(s) to use per query (RAG, live financials, or web search)
-- Streamlit-based chat UI with a FastAPI backend
+An AI-powered stock market assistant built on an **agentic architecture**. Users upload financial research documents (PDF, DOCX) to build a custom knowledge base, then ask natural language questions about stocks, financials, and market trends. A LangGraph agent autonomously decides which tool to use — RAG retrieval, live financial data, or web search — to produce accurate, context-aware answers.
 
 ---
 
-## 2. Tech Stack
+## Table of Contents
+
+1. [Key Features](#key-features)
+2. [Tech Stack](#tech-stack)
+3. [Architecture](#architecture)
+4. [Setup](#setup)
+5. [API Reference](#api-reference)
+6. [Configuration](#configuration)
+7. [Project Structure](#project-structure)
+8. [Notes](#notes)
+
+---
+
+## Key Features
+
+- Upload PDF or DOCX financial research documents into a vector database
+- Ask questions in plain English about stocks, earnings, market trends, and more
+- Agent autonomously selects the right tool per query — no hardcoded routing
+- Streamlit chat UI with a FastAPI backend
+
+---
+
+## Tech Stack
 
 | Layer | Technology |
 |---|---|
 | LLM | Groq — `llama-3.3-70b-versatile` |
 | Embeddings | Google Gemini — `gemini-embedding-001` |
 | Agent Framework | LangGraph (StateGraph with tool nodes) |
-| Tools | Pinecone RAG retriever, Polygon Financials API, Tavily Web Search |
+| Tools | Pinecone RAG retriever · Polygon Financials API · Tavily Web Search |
 | Vector Database | Pinecone (Serverless, AWS us-east-1, cosine similarity) |
 | Backend API | FastAPI + Uvicorn |
 | Frontend UI | Streamlit |
-| Document Loaders | PyPDF, Docx2txt |
+| Document Loaders | PyPDF · Docx2txt |
 | Config | YAML (`config/config.yaml`) |
 | Environment | Python 3.10, Conda |
 
 ---
 
-## 3. How It Works (Architecture)
+## Architecture
 
-### High-Level Flow
+### System Overview
 
+```mermaid
+flowchart TD
+    User(["User"])
+
+    subgraph Frontend["Frontend — Streamlit UI"]
+        Chat["Chat Interface"]
+        Sidebar["Document Upload Sidebar"]
+    end
+
+    subgraph Backend["Backend — FastAPI"]
+        Upload["POST /upload"]
+        Query["POST /query"]
+    end
+
+    subgraph Ingestion["Data Ingestion Pipeline"]
+        Loader["Document Loader\nPDF · DOCX"]
+        Chunker["Text Chunker\n1 000 chars · 200 overlap"]
+        Embedder["Embeddings\nGoogle Gemini"]
+    end
+
+    subgraph Agent["LangGraph Agent"]
+        LLM["Groq LLM\nllama-3.3-70b-versatile"]
+        Decision{{"Tool\nRequired?"}}
+    end
+
+    subgraph Tools["Tool Layer"]
+        RAG["retriever_tool\nPinecone RAG"]
+        Financials["financials_tool\nPolygon.io API"]
+        WebSearch["tavily_tool\nTavily Web Search"]
+    end
+
+    VectorDB[("Pinecone\nVector Database")]
+
+    User -->|Uploads documents| Sidebar
+    User -->|Asks a question| Chat
+    Sidebar --> Upload
+    Chat --> Query
+
+    Upload --> Loader --> Chunker --> Embedder --> VectorDB
+
+    Query --> LLM
+    LLM --> Decision
+    Decision -->|"No tool needed"| Answer["Final Answer"]
+    Decision -->|"RAG query"| RAG
+    Decision -->|"Financial data"| Financials
+    Decision -->|"Web search"| WebSearch
+
+    RAG <-->|"Similarity search"| VectorDB
+    RAG --> LLM
+    Financials --> LLM
+    WebSearch --> LLM
+
+    Answer --> Chat
 ```
-User (Streamlit UI)
-       │
-       ▼
-  FastAPI Backend
-  ┌─────────────────────────────────────┐
-  │  POST /upload  →  DataIngestion     │
-  │    - Load PDF / DOCX                │
-  │    - Chunk text (1000 chars, 200    │
-  │      overlap)                       │
-  │    - Embed with Google Gemini       │
-  │    - Store in Pinecone vector DB    │
-  │                                     │
-  │  POST /query   →  LangGraph Agent   │
-  │    - Receive user question          │
-  │    - LLM decides which tool to use  │
-  │       ├── retriever_tool  (RAG)     │
-  │       ├── financials_tool (Polygon) │
-  │       └── tavilytool     (Web)     │
-  │    - Return final answer            │
-  └─────────────────────────────────────┘
-       │
-       ▼
-  Response → Streamlit Chat UI
+
+---
+
+### Agent Decision Loop
+
+The agent runs a dynamic loop — it keeps calling tools until it has enough context to produce a final answer. There is no fixed routing; the LLM decides at every step.
+
+```mermaid
+flowchart LR
+    START(["START"])
+    END(["END"])
+
+    START --> Chatbot
+
+    subgraph Loop["Autonomous Agent Loop"]
+        Chatbot["Chatbot Node\nGroq LLM"]
+        Condition{{"Tools\nneeded?"}}
+        ToolNode["Tools Node"]
+
+        Chatbot --> Condition
+        Condition -->|"Yes"| ToolNode
+        ToolNode -->|"Tool result"| Chatbot
+    end
+
+    Condition -->|"No — answer ready"| END
+
+    subgraph Tools["Available Tools"]
+        T1["retriever_tool\nPinecone RAG"]
+        T2["financials_tool\nPolygon API"]
+        T3["tavily_tool\nWeb Search"]
+    end
+
+    ToolNode --> T1 & T2 & T3
 ```
 
-### Agent Decision Loop (LangGraph)
+---
 
-```
-START
-  │
-  ▼
-chatbot node  ←──────────────────────┐
-  │                                  │
-  ▼ (tools_condition)                │
-  ├── No tool needed → END           │
-  └── Tool call needed               │
-        │                            │
-        ▼                            │
-   tools node                        │
-   (retriever / financials / tavily) │
-        │                            │
-        └────────────────────────────┘
-```
-
-The agent automatically loops between the chatbot and tool nodes until a final answer is produced — no fixed routing, fully dynamic.
-
-### Component Breakdown
+### Component Map
 
 | Component | File | Role |
 |---|---|---|
@@ -94,12 +152,13 @@ The agent automatically loops between the chatbot and tool nodes until a final a
 
 ---
 
-## 4. Setup Steps
+## Setup
 
 ### Prerequisites
+
 - Python 3.10
 - Conda (recommended) or venv
-- API keys for all required services (see below)
+- API keys for all required services (see Step 4)
 
 ### Step 1 — Clone the Repository
 
@@ -114,21 +173,21 @@ cd Agentic-Trading-Bot
 ```bash
 conda create -p env python=3.10 -y
 
-# On Windows CMD:
+# Windows CMD
 conda activate <full_path_to_env>
 
-# On Git Bash / Linux / Mac:
+# Git Bash / Linux / macOS
 source activate ./env
 ```
 
-**Using venv (alternative):**
+**Using venv:**
 ```bash
 python -m venv venv
 
-# On Windows:
+# Windows
 venv\Scripts\activate
 
-# On Linux / Mac:
+# Linux / macOS
 source venv/bin/activate
 ```
 
@@ -140,7 +199,7 @@ pip install -r requirements.txt
 
 ### Step 4 — Configure Environment Variables
 
-Create a `.env` file in the project root and add the following keys:
+Create a `.env` file in the project root:
 
 ```env
 POLYGON_API_KEY=your_polygon_api_key
@@ -150,39 +209,39 @@ GROQ_API_KEY=your_groq_api_key
 PINECONE_API_KEY=your_pinecone_api_key
 ```
 
-| Key | Purpose | Get it from |
+| Key | Purpose | Where to get it |
 |---|---|---|
 | `POLYGON_API_KEY` | Stock financial data | https://polygon.io |
-| `GOOGLE_API_KEY` | Gemini LLM + embeddings | https://aistudio.google.com |
+| `GOOGLE_API_KEY` | Gemini embeddings | https://aistudio.google.com |
 | `TAVILY_API_KEY` | Live web search | https://tavily.com |
-| `GROQ_API_KEY` | Fast LLM inference (Llama 3.3) | https://console.groq.com |
+| `GROQ_API_KEY` | Fast LLM inference | https://console.groq.com |
 | `PINECONE_API_KEY` | Vector database | https://pinecone.io |
 
-### Step 5 — Run the Backend (FastAPI)
+### Step 5 — Run the Backend
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-API will be available at: `http://localhost:8000`
-Interactive docs at: `http://localhost:8000/docs`
+- API: `http://localhost:8000`
+- Interactive docs: `http://localhost:8000/docs`
 
-### Step 6 — Run the Frontend (Streamlit)
+### Step 6 — Run the Frontend
 
-In a separate terminal (with the environment activated):
+Open a second terminal (with the environment active):
 
 ```bash
 streamlit run streamlit_ui.py
 ```
 
-UI will open at: `http://localhost:8501`
+- UI: `http://localhost:8501`
 
 ---
 
-## 5. API Endpoints
+## API Reference
 
 ### `POST /upload`
-Upload stock market PDF or DOCX files to build the knowledge base.
+Upload one or more PDF or DOCX files to build the knowledge base.
 
 **Request:** `multipart/form-data` with one or more files
 
@@ -190,6 +249,8 @@ Upload stock market PDF or DOCX files to build the knowledge base.
 ```json
 { "message": "Files successfully processed and stored." }
 ```
+
+---
 
 ### `POST /query`
 Ask a question to the trading bot.
@@ -206,9 +267,9 @@ Ask a question to the trading bot.
 
 ---
 
-## 6. Configuration
+## Configuration
 
-All model and retriever settings are managed in `config/config.yaml`:
+All model and retriever settings live in `config/config.yaml`:
 
 ```yaml
 vector_db:
@@ -232,40 +293,40 @@ tools:
 
 ---
 
-## 7. Project Structure
+## Project Structure
 
 ```
 Agentic-Trading-Bot/
 ├── agent/
-│   └── workflow.py          # LangGraph agent (StateGraph)
+│   └── workflow.py                  # LangGraph StateGraph definition
 ├── config/
-│   └── config.yaml          # Centralized config
-├── custom_logging/          # Logging utilities
+│   └── config.yaml                  # Centralized configuration
+├── custom_logging/                  # Logging utilities
 ├── data_ingestion/
-│   └── ingestion_pipeline.py  # PDF/DOCX → Pinecone pipeline
+│   └── ingestion_pipeline.py        # PDF/DOCX → chunk → embed → Pinecone
 ├── data_models/
-│   └── models.py            # Pydantic request/response models
+│   └── models.py                    # Pydantic request/response models
 ├── exception/
-│   └── exceptions.py        # Custom exception handler
-├── fallback_data/           # Fallback responses
-├── prompt_library/          # Prompt templates
+│   └── exceptions.py                # Custom exception handlers
+├── fallback_data/                   # Fallback response templates
+├── prompt_library/                  # Prompt templates for the LLM
 ├── toolkit/
-│   └── tools.py             # LangChain tools (RAG, Polygon, Tavily)
+│   └── tools.py                     # LangChain tools (RAG, Polygon, Tavily)
 ├── utils/
-│   ├── config_loader.py     # YAML config loader
-│   └── model_loaders.py     # LLM + embedding loader
-├── main.py                  # FastAPI application
-├── streamlit_ui.py          # Streamlit chat frontend
+│   ├── config_loader.py             # YAML config loader
+│   └── model_loaders.py             # LLM + embedding initializer
+├── main.py                          # FastAPI application entry point
+├── streamlit_ui.py                  # Streamlit chat frontend
 ├── requirements.txt
 ├── setup.py
-└── .env                     # API keys (not committed)
+└── .env                             # API keys — never commit this file
 ```
 
 ---
 
-## 8. Notes
+## Notes
 
-- The Pinecone index is created automatically on first upload if it does not exist (dimension: 3072, metric: cosine, AWS us-east-1).
-- The agent uses Groq for fast LLM inference and Google Gemini solely for embeddings.
-- Do not commit your `.env` file — add it to `.gitignore`.
-- CORS is currently set to `allow_origins=["*"]`; restrict this to specific origins in production.
+- The Pinecone index is created automatically on the first upload (dimension: 3072, metric: cosine, region: AWS us-east-1).
+- Groq handles all LLM inference; Google Gemini is used exclusively for generating embeddings.
+- Never commit your `.env` file — ensure it is listed in `.gitignore`.
+- CORS is currently set to `allow_origins=["*"]`. Restrict this to specific origins before deploying to production.
